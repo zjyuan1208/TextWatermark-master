@@ -101,43 +101,30 @@ class NLI_infer_BERT(nn.Module):
                 logits = self.model(input_ids, segment_ids, input_mask)
                 probs = nn.functional.softmax(logits, dim=-1)
                 probs_all.append(probs)
+                        tmp_emb = self.model.bert.embeddings(input_ids, segment_ids).requires_grad_(True)
+            
+            # find out the grad of each word
+            tmp_att_mask = torch.zeros([1, 1, 1, 256])
+            head_mask = [None] * 12
+            tmp_layer = False
+            # encoder_layers -> grad_layer_output
+            grad_layer_output = self.model.bert.encoder(tmp_emb, tmp_att_mask, tmp_layer, head_mask)
+            grad_encoded_layers = grad_layer_output
+            sequence_output = grad_encoded_layers[-1]
+            pooled_output = self.model.bert.pooler(sequence_output)
+            pooled_output = self.dropout(pooled_output)
+            logits_1 = self.classifier(pooled_output)
 
-            # if t_label is None:
-            #     with torch.no_grad():
-            #         logits = self.model(input_ids, segment_ids, input_mask)
-            #         probs = nn.functional.softmax(logits, dim=-1)
-            #         probs_all.append(probs)
-            # else:
-            #     input_ids = torch.tensor(input_ids).float().requires_grad_(True).cuda()
-            #     input_ids = torch.tensor(input_ids).long()
-            #     logits_1 = self.model(input_ids, segment_ids, input_mask).cuda()
-            #     # print(self.model.bert[1:])
-            #     # print(dir(self.model.bert))
-            #     # print(self.model.bert.encoder(input_ids, segment_ids, input_mask))
-            #     # exit()
-            #     # print(logits_1)
-            #     # emb = self.model.bert.embeddings(input_ids, segment_ids)
-            #     # emb = torch.autograd.Variable(emb, requires_grad=True)
-            #     # print(emb)
-            #     # final = self.model.bert.encoder(emb, input_mask)
-            #     # print(final)
-            #
-            #     probs = nn.functional.softmax(logits_1, dim=-1).cuda()
-            #     prob = probs.max(dim=-1).values.cuda()
-            #     # if t_label is int:
-            #     #     t_label = torch.tensor(t_label).expand_as(prob).cuda()
-            #     # t_label = torch.tensor(t_label).cuda()
-            #     t_label = torch.ones([probs.size(0),1]).long().cuda()
-            #     # print(t_label.shape)
-            #     loss = F.cross_entropy(probs, t_label)
-            #     loss.backward(torch.ones_like(loss), retain_graph=True)
-            #     # grad = emb.grad.clone()
-            #     # print(grad)
-            #
-            #     with torch.no_grad():
-            #         logits = self.model(input_ids, segment_ids, input_mask)
-            #         probs = nn.functional.softmax(logits, dim=-1)
-            #         probs_all.append(probs)
+            probs = nn.functional.softmax(logits_1, dim=-1).cuda()
+            t_label = torch.ones([probs.size(0),1]).long().cuda()
+
+            loss = F.cross_entropy(probs, t_label[0])
+            loss.backward()
+            probs.backward()
+            grad = tmp_emb.grad
+            print(grad)
+
+            
 
         return torch.cat(probs_all, dim=0)
 
@@ -286,10 +273,9 @@ def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, c
         for idx, word in words_perturb:
             if word in word2idx:
                 synonyms = synonym_words.pop(0)
-                # 自己额外加的水印 START
+                # Watermark START
                 synonyms_ = []
                 for word in synonyms:
-                    word_ori = word
                     word_1 = ""
                     word_2 = ""
                     word_3 = ""
@@ -317,7 +303,6 @@ def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, c
                             invisible_chars
                         )
 
-                    synonyms_.append(word_ori)
                     synonyms_.append(word_1)
                     synonyms_.append(word_2)
                     synonyms_.append(word_3)
@@ -327,103 +312,8 @@ def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, c
 
                 if synonyms_:
                     synonyms_all.append((idx, synonyms_))
-                # 自己额外加的 END
+                # END
 
-                # if synonyms:
-                #     synonyms_all.append((idx, synonyms))
-
-        # perform watermark for testing
-        '''
-        word = 'love'
-        word_1 = ""
-        for char in word:
-            word_1 += choice(dict_latin.get(char, []) + [char])
-        print(word_1)
-        word_2 = ""
-        for char in word:
-            word_2 += choice(dict_latin.get(char, []) + [char])
-        print(word_2)
-        word_3 = ""
-        for char in word:
-            word_3 += choice(dict_latin.get(char, []) + [char])
-        print(word_3)
-
-        model = BertForSequenceClassification.from_pretrained(pretrained_dir, num_labels=nclasses).cuda()
-        print(dir(model.bert.embeddings.word_embeding))
-
-        synonym_words = []
-        for idx, word in words_perturb:
-            synonym_words_sub = []
-            word_11 = ""
-            word_12 = ""
-            word_13 = ""
-            word_14 = ""
-            word_15 = ""
-            word_21 = ""
-            word_22 = ""
-            word_23 = ""
-            word_24 = ""
-            word_25 = ""
-            word_31 = ""
-            word_32 = ""
-            word_33 = ""
-            word_34 = ""
-            word_35 = ""
-            for char in word:
-                # print(word)
-                word_11 += char + choice(invisible_chars)
-                word_12 += char + choice(invisible_chars)
-                word_13 += char + choice(invisible_chars)
-                word_14 += char + choice(invisible_chars)
-                word_15 += char + choice(invisible_chars)
-            # print(word_1)
-            synonym_words_sub.append(word_11)
-            synonym_words_sub.append(word_12)
-            synonym_words_sub.append(word_13)
-            synonym_words_sub.append(word_14)
-            synonym_words_sub.append(word_15)
-            for char in word:
-                # print(word)
-                word_21 += choice(dict_latin.get(char, []) + [char])
-                word_22 += choice(dict_latin.get(char, []) + [char])
-                word_23 += choice(dict_latin.get(char, []) + [char])
-                word_24 += choice(dict_latin.get(char, []) + [char])
-                word_25 += choice(dict_latin.get(char, []) + [char])
-            word_21 += ""
-            word_22 += ""
-            word_23 += ""
-            word_24 += ""
-            word_25 += ""
-            # print(word_2)
-            synonym_words_sub.append(word_21)
-            synonym_words_sub.append(word_22)
-            synonym_words_sub.append(word_23)
-            synonym_words_sub.append(word_24)
-            synonym_words_sub.append(word_25)
-            for char in word:
-                # print(word)
-                word_31 += choice(dict_latin.get(char, []) + [char]) + choice(
-                    invisible_chars
-                )
-                word_32 += choice(dict_latin.get(char, []) + [char]) + choice(
-                    invisible_chars
-                )
-                word_33 += choice(dict_latin.get(char, []) + [char]) + choice(
-                    invisible_chars
-                )
-                word_34 += choice(dict_latin.get(char, []) + [char]) + choice(
-                    invisible_chars
-                )
-                word_35 += choice(dict_latin.get(char, []) + [char]) + choice(
-                    invisible_chars
-                )
-            synonym_words_sub.append(word_31)
-            synonym_words_sub.append(word_32)
-            synonym_words_sub.append(word_33)
-            synonym_words_sub.append(word_34)
-            synonym_words_sub.append(word_35)
-            synonym_words.append(synonym_words_sub)
-            '''
 
         # The original version
         '''
@@ -475,9 +365,7 @@ def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, c
 
             if np.sum(new_probs_mask) > 0:
 
-                # 原来的版本
                 text_prime[idx] = synonyms[(new_probs_mask * semantic_sims).argmax()]
-                # 原来的版本
                 num_changed += 1
                 break
             else:
@@ -486,9 +374,7 @@ def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, c
                 new_label_prob_min, new_label_prob_argmin = torch.min(new_label_probs, dim=-1)
                 if new_label_prob_min < orig_prob:
 
-                    # 原来的版本
                     text_prime[idx] = synonyms[new_label_prob_argmin]
-                    # 原来的版本
                     num_changed += 1
             text_cache = text_prime[:]
         return ' '.join(text_prime), num_changed, orig_label, torch.argmax(predictor([text_prime])), num_queries
