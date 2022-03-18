@@ -9,18 +9,17 @@ import random
 import tensorflow as tf
 import tensorflow_hub as hub
 
+from torch.autograd import Variable
+from random import shuffle, choice
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, SequentialSampler, TensorDataset
 
 from BERT.tokenization import BertTokenizer
 from BERT.modeling import BertForSequenceClassification, BertConfig
 
-import sys
-from random import shuffle, choice
-from typing import List
-from dictionnaries import invisible_chars, dict_latin
+from dictionnaries import dic_latin_2_cyrillic, dict_latin, invisible_chars, dic_latin_2_random1, dic_latin_2_random2, dic_latin_2_homo
 
 
 class USE(object):
@@ -82,49 +81,30 @@ class NLI_infer_BERT(nn.Module):
         # construct dataset loader
         self.dataset = NLIDataset_BERT(pretrained_dir, max_seq_length=max_seq_length, batch_size=batch_size)
 
-    def text_pred(self, text_data, t_label = None, batch_size=32):
+    def text_pred(self, text_data, batch_size=32):
         # Switch the model to eval mode.
-        # print(t_label)
         self.model.eval()
 
         # transform text data into indices and create batches
         dataloader = self.dataset.transform_text(text_data, batch_size=batch_size)
 
+
         probs_all = []
-        #  for input_ids, input_mask, segment_ids in tqdm(dataloader, desc="Evaluating"):
+        #         for input_ids, input_mask, segment_ids in tqdm(dataloader, desc="Evaluating"):
         for input_ids, input_mask, segment_ids in dataloader:
             input_ids = input_ids.cuda()
+            # print(input_ids)
             input_mask = input_mask.cuda()
             segment_ids = segment_ids.cuda()
+
+            logits = self.model(input_ids, segment_ids, input_mask)
+            probs = nn.functional.softmax(logits, dim=-1)
+            label = torch.zeros(probs.size(0), 1).cuda()
 
             with torch.no_grad():
                 logits = self.model(input_ids, segment_ids, input_mask)
                 probs = nn.functional.softmax(logits, dim=-1)
                 probs_all.append(probs)
-                        tmp_emb = self.model.bert.embeddings(input_ids, segment_ids).requires_grad_(True)
-            
-            # find out the grad of each word
-            tmp_att_mask = torch.zeros([1, 1, 1, 256])
-            head_mask = [None] * 12
-            tmp_layer = False
-            # encoder_layers -> grad_layer_output
-            grad_layer_output = self.model.bert.encoder(tmp_emb, tmp_att_mask, tmp_layer, head_mask)
-            grad_encoded_layers = grad_layer_output
-            sequence_output = grad_encoded_layers[-1]
-            pooled_output = self.model.bert.pooler(sequence_output)
-            pooled_output = self.dropout(pooled_output)
-            logits_1 = self.classifier(pooled_output)
-
-            probs = nn.functional.softmax(logits_1, dim=-1).cuda()
-            t_label = torch.ones([probs.size(0),1]).long().cuda()
-
-            loss = F.cross_entropy(probs, t_label[0])
-            loss.backward()
-            probs.backward()
-            grad = tmp_emb.grad
-            print(grad)
-
-            
 
         return torch.cat(probs_all, dim=0)
 
@@ -216,6 +196,7 @@ class NLIDataset_BERT(Dataset):
         all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
         eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids)
+        # print(all_segment_ids)
 
         # Run prediction for full data
         eval_sampler = SequentialSampler(eval_data)
@@ -223,14 +204,338 @@ class NLIDataset_BERT(Dataset):
 
         return eval_dataloader
 
+def op_insert(word):
+    len = word.__len__()
+    # len = len(word)
+    if len == 1:
+        word_op = word
+    else:
+        insert_index = np.random.randint(1,len)
+        str_list = list(word)
+        str_list.insert(insert_index, " ")
+        word_op = ''.join(str_list)
+
+    return word_op
+
+def op_delete(word):
+    len = word.__len__()
+    if len == 1 or len == 2:
+        word_op = word
+    else:
+        insert_index = np.random.randint(1, len-1)
+        word_op = word.replace(word[insert_index], '')
+
+    return word_op
+
+def op_swap(word):
+    len = word.__len__()
+    if len != 1 and len != 2:
+        swap_index_1 = np.random.randint(1, len - 1)
+        swap_index_2 = np.random.randint(1, len - 1)
+        word_lst = list(word)
+        if swap_index_1 != swap_index_2:
+            tmp = word_lst[swap_index_1]
+            word_lst[swap_index_1] = word_lst[swap_index_2]
+            word_lst[swap_index_2] = tmp
+            word_op = ''.join(word_lst)
+        elif swap_index_1 == swap_index_2 & swap_index_2 == len - 1:
+            swap_index_2 -= 1
+            tmp = word_lst[swap_index_1]
+            word_lst[swap_index_1] = word_lst[swap_index_2]
+            word_lst[swap_index_2] = tmp
+            word_op = ''.join(word_lst)
+        elif swap_index_1 == swap_index_2 & swap_index_2 == 1:
+            swap_index_2 += 1
+            tmp = word_lst[swap_index_1]
+            word_lst[swap_index_1] = word_lst[swap_index_2]
+            word_lst[swap_index_2] = tmp
+            word_op = ''.join(word_lst)
+        else:
+            word_op = ''.join(word_lst)
+    else:
+        word_op = word
+
+    return word_op
+
+def op_insert_inv(word):
+    word_op = ""
+    for char in word:
+        word_op += choice(dict_latin.get(char, []) + [char]) + choice(
+            invisible_chars
+        )
+
+    return word_op
+
+
+# def op_sub_c(word):
+#     len = word.__len__()
+#     for i in range(len):
+#         if word[i] == 'l':
+#             word_op = word.replace(word[i], '1')
+#         elif word[i] == 'o':
+#             word_op = word.replace(word[i], '0')
+#         else:
+#             word_op = word
+#
+#     return word_op
+def ConvertToCoordinates(word):
+
+    Coordinates = []
+    for c in word:
+        for i, r in enumerate(Rows):
+            try:
+                Coordinates.append((i % 4, r.index(c)))
+            except:
+                pass
+    return Coordinates
+
+def FindoutAdjacent(coord):
+    x = coord[0][0]
+    y = coord[0][1]
+    adj_lst = []
+    if x == 0 :
+        if y == 0 :
+            adj_lst.append(Rows[1][0])
+            adj_lst.append(Rows[0][1])
+        elif y == len(KeyboardRow1):
+            adj_lst.append(Rows[0][y - 1])
+        else:
+            adj_lst.append(Rows[x][y - 1])
+            adj_lst.append(Rows[x][y + 1])
+            adj_lst.append(Rows[x + 1][y])
+    elif x == 2 :
+        if y == 0 :
+            adj_lst.append(Rows[1][0])
+            adj_lst.append(Rows[2][1])
+        elif y == len(KeyboardRow3):
+            adj_lst.append(Rows[1][y])
+            adj_lst.append(Rows[2][y - 1])
+        else:
+            adj_lst.append(Rows[x][y - 1])
+            adj_lst.append(Rows[x][y + 1])
+            adj_lst.append(Rows[x - 1][y])
+    else:
+        if y == 0:
+            adj_lst.append(Rows[x][y + 1])
+            adj_lst.append(Rows[x - 1][y])
+            adj_lst.append(Rows[x + 1][y])
+        elif y == len(KeyboardRow2) :
+            adj_lst.append(Rows[x][y - 1])
+            adj_lst.append(Rows[x - 1][y])
+        elif y == len(KeyboardRow2) - 1:
+            adj_lst.append(Rows[x][y - 1])
+            adj_lst.append(Rows[x][y + 1])
+            adj_lst.append(Rows[x - 1][y])
+        else:
+            adj_lst.append(Rows[x][y - 1])
+            adj_lst.append(Rows[x][y + 1])
+            adj_lst.append(Rows[x - 1][y])
+            adj_lst.append(Rows[x + 1][y])
+
+    return adj_lst
+
+# word = 'yuan'
+homos = {'1':'l',
+         '0':'O',
+         "'":'`',
+         'a': '@',
+         'b': 'Ь',
+         'c': '?',
+         'd': '?',
+         'e': 'е',
+         'f': '?',
+         'g': 'ɡ',
+         'h': '?',
+         'i': '?',
+         'j': '?',
+         'k': '?',
+         'l': '?',
+         'm': 'ｍ',
+         'n': '?',
+         'o':'о',
+         'p': 'р',
+         'q': '?',
+         'r': '?',
+         's': '?',
+         't': '?',
+         'u': '?',
+         'v': '?',
+         'w': '?',
+         'x': '×',
+         'y': 'у',
+         'z': '?'}
+
+def op_sub_c(word):
+
+    type = np.random.randint(0, 1)
+    if type == 0:
+        for char in word:
+            for key, value in homos.items():
+                if char == key:
+                    invisible_word = word.replace(char, value)
+                    return invisible_word
+        return word
+    else:
+        if len(word) > 1:
+            char_index = np.random.randint(0, len(word))
+            coord = ConvertToCoordinates(word[char_index])
+
+            adj = FindoutAdjacent(coord)
+
+            if len(adj) > 0:
+                index = np.random.randint(0, len(adj))
+                word_op = word.replace(word[char_index], adj[index])
+            else:
+                word_op = word
+            return word_op
+        else:
+            return word
+
+from dictionnaries import dic_latin_2_cyrillic
+
+def op_sub_inv(word):
+    for char in word:
+        for key, value in dic_latin_2_cyrillic.items():
+        # for key, value in dic_latin_2_random1.items():
+        # for key, value in dic_latin_2_random2.items():
+            if char == key:
+                invisible_word = word.replace(char, value)
+                return invisible_word
+    # else:
+    return word
+
+sp_lst = []
+def op_insert_space(word):
+    word_1 = ""
+    for char in word:
+
+        word_1 += choice(dict_latin.get(char, []) + [char]) + choice(
+            invisible_chars
+        )
+
+    return word_1
+
+# dalao's methods
+
+invisible_lst = []
+def op_sub_homo(word):
+    invisible_lst.append(word)
+    for char in invisible_lst[-1]:
+        for key, value in dic_latin_2_homo.items():
+            if char == key :
+                invisible_word_tmp = invisible_lst[-1].replace(char, value)
+                invisible_lst.append(invisible_word_tmp)
+    final = invisible_lst[-1]
+
+    return final
+
+
+# Unicode Bidi override characters
+PDF = chr(0x202C)
+LRE = chr(0x202A)
+RLE = chr(0x202B)
+LRO = chr(0x202D)
+RLO = chr(0x202E)
+
+PDI = chr(0x2069)
+LRI = chr(0x2066)
+RLI = chr(0x2067)
+
+
+class Swap():
+    """Represents swapped elements in a string of text."""
+
+    def __init__(self, one, two):
+        self.one = one
+        self.two = two
+
+    def __repr__(self):
+        return f"Swap({self.one}, {self.two})"
+
+    # def __eq__(self, other):
+    #     return self.one == other.one and self.two == other.two
+
+    def __hash__(self):
+        return hash((self.one, self.two))
+
+
+def some(*els):
+    """Returns the arguments as a tuple with Nones removed."""
+    return tuple(filter(None, tuple(els)))
+
+
+def swaps(chars: str) -> set:
+    """Generates all possible swaps for a string."""
+
+    def pairs(chars, pre=(), suf=()):
+        orders = set()
+        for i in range(len(chars) - 1):
+            prefix = pre + tuple(chars[:i])
+            suffix = suf + tuple(chars[i + 2:])
+            swap = Swap(chars[i + 1], chars[i])
+            pair = some(prefix, swap, suffix)
+            orders.add(pair)
+            orders.update(pairs(suffix, pre=some(prefix, swap)))
+            orders.update(pairs(some(prefix, swap), suf=suffix))
+        return orders
+
+    return pairs(chars) | {tuple(chars)}
+
+
+def unswap(el: tuple) -> str:
+    """Reverts a tuple of swaps to the original string."""
+    if isinstance(el, str):
+        return el
+    elif isinstance(el, Swap):
+        return unswap((el.two, el.one))
+    else:
+        res = ""
+        for e in el:
+            res += unswap(e)
+        return res
+
+
+def uniswap(els):
+    res = ""
+    for el in els:
+        if isinstance(el, Swap):
+            res += uniswap([LRO, LRI, RLO, LRI, el.one, PDI, LRI, el.two, PDI, PDF, PDI, PDF])
+        elif isinstance(el, str):
+            res += el
+        else:
+            for subel in el:
+                res += uniswap([subel])
+    return res
+
+
+def strings_to_file(file, string):
+    with open(file, 'w') as f:
+        for swap in swaps(string):
+            uni = uniswap(swap)
+            print(uni, file=f)
+
+
+def print_strings(string):
+    for swap in swaps(string):
+        uni = uniswap(swap)
+        print(uni)
+
+uni_lst = []
+def op_reordering(word):
+    uni_lst.append(word)
+    if len(word) > 1:
+        for swap in swaps(word):
+            uni = uniswap(swap)
+            uni_lst.append(uni)
+    # print(uni_lst[-1])
+    return uni_lst[-1]
+
 
 def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, cos_sim, sim_predictor=None,
            import_score_threshold=-1., sim_score_threshold=0.5, sim_score_window=15, synonym_num=50,
            batch_size=32):
-    # sim_score_threshold = 0.5 # original version
     # first check the prediction of the original text
-    orig_probs = predictor([text_ls], t_label=None).squeeze()
-    # print('orig_probs',orig_probs)
+    orig_probs = predictor([text_ls]).squeeze()
     orig_label = torch.argmax(orig_probs)
     orig_prob = orig_probs.max()
     if true_label != orig_label:
@@ -239,7 +544,6 @@ def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, c
         len_text = len(text_ls)
         if len_text < sim_score_window:
             sim_score_threshold = 0.1  # shut down the similarity thresholding function
-            # sim_score_threshold = 0.  # shut down the similarity thresholding function
         half_sim_score_window = (sim_score_window - 1) // 2
         num_queries = 1
 
@@ -248,7 +552,7 @@ def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, c
 
         # get importance score
         leave_1_texts = [text_ls[:ii] + ['<oov>'] + text_ls[min(ii + 1, len_text):] for ii in range(len_text)]
-        leave_1_probs = predictor(leave_1_texts, true_label, batch_size=batch_size)
+        leave_1_probs = predictor(leave_1_texts, batch_size=batch_size)
         num_queries += len(leave_1_texts)
         leave_1_probs_argmax = torch.argmax(leave_1_probs, dim=-1)
         import_scores = (orig_prob - leave_1_probs[:, orig_label] + (leave_1_probs_argmax != orig_label).float() * (
@@ -265,115 +569,58 @@ def attack(text_ls, true_label, predictor, stop_words_set, word2idx, idx2word, c
                 print(idx, len(text_ls), import_scores.shape, text_ls, len(leave_1_texts))
 
         # find synonyms
-        words_perturb_idx = [word2idx[word] for idx, word in words_perturb if word in word2idx]
-        synonym_words, _ = pick_most_similar_words_batch(words_perturb_idx, cos_sim, idx2word, synonym_num, 0.5)
-        # synonym_words is a list contains all of the synonym word!
+        # words_perturb_idx = [word2idx[word] for idx, word in words_perturb if word in word2idx]
+
+        # synonym_words, _ = pick_most_similar_words_batch(words_perturb_idx, cos_sim, idx2word, synonym_num, 0.)
         synonyms_all = []
-        synonyms_all_ = []
+        single_lst = []
         for idx, word in words_perturb:
-            if word in word2idx:
-                synonyms = synonym_words.pop(0)
-                # Watermark START
-                synonyms_ = []
-                for word in synonyms:
-                    word_1 = ""
-                    word_2 = ""
-                    word_3 = ""
-                    word_4 = ""
-                    word_5 = ""
-                    word_6 = ""
+            synonyms_ = []
+            synonym_one = word
+            synonyms_.append(synonym_one)
+            word_op_1 = op_sub_inv(synonym_one)
+            synonyms_.append(word_op_1)
+            # word_op_2 = op_insert_inv(synonym_one)
+            # synonyms_.append(word_op_2)
+            # word_op_1 = op_insert(synonym_one)
+            # synonyms_.append(word_op_1)
+            # word_op_2 = op_delete(synonym_one)
+            # synonyms_.append(word_op_2)
+            # word_op_3 = op_swap(synonym_one)
+            # synonyms_.append(word_op_3)
+            # word_op_4 = op_sub_c(synonym_one)
+            # synonyms_.append(word_op_4)
 
-                    for char in word:
-                        word_1 += choice(dict_latin.get(char, []) + [char]) + choice(
-                            invisible_chars
-                        )
-                        word_2 += choice(dict_latin.get(char, []) + [char]) + choice(
-                            invisible_chars
-                        )
-                        word_3 += choice(dict_latin.get(char, []) + [char]) + choice(
-                            invisible_chars
-                        )
-                        word_4 += choice(dict_latin.get(char, []) + [char]) + choice(
-                            invisible_chars
-                        )
-                        word_5 += choice(dict_latin.get(char, []) + [char]) + choice(
-                            invisible_chars
-                        )
-                        word_6 += choice(dict_latin.get(char, []) + [char]) + choice(
-                            invisible_chars
-                        )
+            # word_op_5 = op_insert_space(synonym_one)
+            # synonyms_.append(word_op_5)
+            # word_op_6 = op_sub_homo(synonym_one)
+            # synonyms_.append(word_op_6)
+            # word_op_7 = op_reordering(synonym_one)
+            # synonyms_.append(word_op_7)
+            synonyms_all.append((idx, synonyms_))
+            # print(synonyms_all)
 
-                    synonyms_.append(word_1)
-                    synonyms_.append(word_2)
-                    synonyms_.append(word_3)
-                    synonyms_.append(word_4)
-                    synonyms_.append(word_5)
-                    synonyms_.append(word_6)
-
-                if synonyms_:
-                    synonyms_all.append((idx, synonyms_))
-                # END
-
-
-        # The original version
-        '''
-        synonyms_all = []
-        for idx, word in words_perturb:
-            if word in word2idx:
-                synonyms = synonym_words.pop(0)
-                if synonyms:
-                    synonyms_all.append((idx, synonyms))
-        '''
-
-        # start replacing and attacking
         text_prime = text_ls[:]
         text_cache = text_prime[:]
         num_changed = 0
         for idx, synonyms in synonyms_all:
             new_texts = [text_prime[:idx] + [synonym] + text_prime[min(idx + 1, len_text):] for synonym in synonyms]
             new_probs = predictor(new_texts, batch_size=batch_size)
-
-
-            # compute semantic similarity
-            if idx >= half_sim_score_window and len_text - idx - 1 >= half_sim_score_window:
-                text_range_min = idx - half_sim_score_window
-                text_range_max = idx + half_sim_score_window + 1
-            elif idx < half_sim_score_window and len_text - idx - 1 >= half_sim_score_window:
-                text_range_min = 0
-                text_range_max = sim_score_window
-            elif idx >= half_sim_score_window and len_text - idx - 1 < half_sim_score_window:
-                text_range_min = len_text - sim_score_window
-                text_range_max = len_text
-            else:
-                text_range_min = 0
-                text_range_max = len_text
-            semantic_sims = \
-            sim_predictor.semantic_sim([' '.join(text_cache[text_range_min:text_range_max])] * len(new_texts),
-                                       list(map(lambda x: ' '.join(x[text_range_min:text_range_max]), new_texts)))[0]
-
             num_queries += len(new_texts)
             if len(new_probs.shape) < 2:
                 new_probs = new_probs.unsqueeze(0)
             new_probs_mask = (orig_label != torch.argmax(new_probs, dim=-1)).data.cpu().numpy()
-            # prevent bad synonyms
-            new_probs_mask *= (semantic_sims >= sim_score_threshold)
-            # prevent incompatible pos
-            synonyms_pos_ls = [criteria.get_pos(new_text[max(idx - 4, 0):idx + 5])[min(4, idx)]
-                               if len(new_text) > 10 else criteria.get_pos(new_text)[idx] for new_text in new_texts]
-            pos_mask = np.array(criteria.pos_filter(pos_ls[idx], synonyms_pos_ls))
-            new_probs_mask *= pos_mask
 
             if np.sum(new_probs_mask) > 0:
-
-                text_prime[idx] = synonyms[(new_probs_mask * semantic_sims).argmax()]
+                # text_prime[idx] = synonyms[(new_probs_mask * semantic_sims).argmax()]
+                text_prime[idx] = synonyms[(new_probs_mask).argmax()]
                 num_changed += 1
                 break
+
             else:
-                new_label_probs = new_probs[:, orig_label] + torch.from_numpy(
-                        (semantic_sims < sim_score_threshold) + (1 - pos_mask).astype(float)).float().cuda()
+                new_label_probs = new_probs[:, orig_label]
                 new_label_prob_min, new_label_prob_argmin = torch.min(new_label_probs, dim=-1)
                 if new_label_prob_min < orig_prob:
-
                     text_prime[idx] = synonyms[new_label_prob_argmin]
                     num_changed += 1
             text_cache = text_prime[:]
@@ -405,7 +652,8 @@ def random_attack(text_ls, true_label, predictor, perturb_ratio, stop_words_set,
 
         # find synonyms
         words_perturb_idx = [word2idx[word] for idx, word in words_perturb if word in word2idx]
-        synonym_words, _ = pick_most_similar_words_batch(words_perturb_idx, cos_sim, idx2word, synonym_num, 0.5)
+        # synonym_words, _ = pick_most_similar_words_batch(words_perturb_idx, cos_sim, idx2word, synonym_num, 0.5)
+        synonym_words, _ = pick_most_similar_words_batch(words_perturb_idx, cos_sim, idx2word, synonym_num, 0.)
         synonyms_all = []
         for idx, word in words_perturb:
             if word in word2idx:
@@ -505,7 +753,7 @@ def main():
                         help="Path to the USE encoder cache.")
     parser.add_argument("--output_dir",
                         type=str,
-                        default='adv_results_bert_fake',
+                        default='adv_results',
                         help="The output directory where the attack results will be written.")
 
     ## Model hyperparameters
@@ -665,9 +913,16 @@ def main():
     print(message)
     log_file.write(message)
 
-    with open(os.path.join(args.output_dir, 'adversaries.txt'), 'w') as ofile:
+    with open(os.path.join(args.output_dir, 'adversaries_show3.txt'), 'w') as ofile:
         for orig_text, adv_text, true_label, new_label in zip(orig_texts, adv_texts, true_labels, new_labels):
             ofile.write('orig sent ({}):\t{}\nadv sent ({}):\t{}\n\n'.format(true_label, orig_text, new_label, adv_text))
+
+    # with open(os.path.join(args.output_dir, 'adversaries_bert_mr.txt'), 'w') as ofile:
+    #     for orig_text, adv_text, true_label, new_label in zip(orig_texts, adv_texts, true_labels, new_labels):
+    #
+    #         ofile.write(
+    #             '{}{}{}\n'.format(true_label, " " , adv_text))
+
 
 if __name__ == "__main__":
     main()
