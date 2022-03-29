@@ -1,5 +1,5 @@
 # TextWatermark
-A Model for Natural Language Attack on Text Classification and Inference
+A Model for Natural Language Attack on Text Classification and Inference using invisble attack.
 
 ## Data
 Our 7 datasets are [here](https://bit.ly/nlp_adv_data).
