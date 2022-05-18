@@ -250,10 +250,6 @@ class NLIDataset_BERT(Dataset):
     def transform_text(self, data, batch_size=32):
         # transform data into seq of embeddings
 
-        # print('data_len', len(data))
-        # print('data_0', len(data[0]), data[0])
-        # print('data_1', len(data[1]), data[1])
-
         eval_features = self.convert_examples_to_features(data,
                                                           self.max_seq_length, self.tokenizer)
 
